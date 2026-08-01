@@ -1,0 +1,5 @@
+CompileFlags:
+  Add: [-std=c++23, -Wall, -Wextra, -Wpedantic]
+Completion:
+  HeaderInsertion: Never
+CompilationDatabase: build

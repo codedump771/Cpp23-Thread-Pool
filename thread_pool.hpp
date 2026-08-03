@@ -8,16 +8,16 @@
 
 class ThreadPool {
 public:
-    explicit ThreadPool(std::size_t num_threads) : num_threads_(num_threads) { Init(); }
+    explicit ThreadPool(std::size_t num_threads) : num_threads_(num_threads) { init(); }
 
     ThreadPool() : num_threads_(std::thread::hardware_concurrency()) {
         num_threads_ == 0 ? num_threads_ = 1 : num_threads_;
-        Init();
+        init();
     }
 
     ~ThreadPool() {
         if (running_)
-            Shutdown();
+            shutdown();
 
         for (auto& t : threads_) {
             if (t.joinable())
@@ -30,12 +30,12 @@ public:
     ThreadPool(ThreadPool&&) = delete;
     ThreadPool& operator=(ThreadPool&&) = delete;
 
-    void Init() {
+    void init() {
         for (std::size_t i = 0; i < num_threads_; ++i)
-            threads_.emplace_back(&ThreadPool::LaunchThread, this);
+            threads_.emplace_back(&ThreadPool::launch_thread, this);
     }
 
-    void LaunchThread() {
+    void launch_thread() {
         while (true) {
             std::move_only_function<void()> task;
             {
@@ -51,14 +51,14 @@ public:
         }
     }
 
-    void Shutdown() {
+    void shutdown() {
         running_ = false;
         condition_.notify_all();
     }
 
     template <typename Fn, typename... Args>
         requires std::invocable<Fn, Args...>
-    [[nodiscard]] std::future<std::invoke_result_t<Fn, Args...>> Enqueue(Fn&& func, Args&&... args) {
+    [[nodiscard]] std::future<std::invoke_result_t<Fn, Args...>> enqueue(Fn&& func, Args&&... args) {
 
         if (!running_) 
             throw std::logic_error("Task enqueued after shutdown");
@@ -82,7 +82,7 @@ public:
 
     template <typename Fn, typename... Args>
         requires std::invocable<Fn, Args...>
-    void EnqueueDetached(Fn&& func, Args&&... args) {
+    void enqueue_detached(Fn&& func, Args&&... args) {
         {
             std::lock_guard<std::mutex> lock(mutex_);
             tasks_.push([f = std::forward<Fn>(func), ... a = std::forward<Args>(args)]() mutable {

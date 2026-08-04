@@ -10,19 +10,10 @@ class ThreadPool {
 public:
     explicit ThreadPool(std::size_t num_threads) : num_threads_(num_threads) { init(); }
 
-    ThreadPool() : num_threads_(std::thread::hardware_concurrency()) {
-        num_threads_ == 0 ? num_threads_ = 1 : num_threads_;
-        init();
-    }
+    ThreadPool() : num_threads_(std::thread::hardware_concurrency()) { init(); }
 
     ~ThreadPool() {
-        if (running_)
-            shutdown();
-
-        for (auto& t : threads_) {
-            if (t.joinable())
-                t.join();
-        }
+        shutdown();
     }
 
     ThreadPool(const ThreadPool&) = delete;
@@ -41,28 +32,41 @@ public:
             {
                 std::unique_lock<std::mutex> lock(mutex_);
                 condition_.wait(lock, [this] { return !running_ || !tasks_.empty(); });
+
                 if (!running_ && tasks_.empty())
                     // Ensure all tasks are finished before stopping
                     return;
                 task = std::move(tasks_.front());
                 tasks_.pop();
+                remaining_tasks_--;
             }
             task();
         }
     }
 
+    void wait() {
+        while (!threads_.empty()) {
+            
+        }
+    }
+
     void shutdown() {
-        running_ = false;
+        if (!running_.load())
+            return;
+
+        running_.store(false);
+        
         condition_.notify_all();
+
+        for (auto& t : threads_) {
+            if (t.joinable())
+                t.join();
+        }
     }
 
     template <typename Fn, typename... Args>
         requires std::invocable<Fn, Args...>
     [[nodiscard]] std::future<std::invoke_result_t<Fn, Args...>> enqueue(Fn&& func, Args&&... args) {
-
-        if (!running_) 
-            throw std::logic_error("Task enqueued after shutdown");
-        
         using ReturnType = std::invoke_result_t<Fn, Args...>;
 
         std::packaged_task<ReturnType()> task([f = std::forward<Fn>(func), ... a = std::forward<Args>(args)]() mutable {
@@ -71,30 +75,33 @@ public:
 
         std::future<ReturnType> future = task.get_future();
 
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            tasks_.push([t = std::move(task)] mutable { t(); });
-        }
+        push_task([f = std::move(task)]() mutable { f(); });
 
-        condition_.notify_one();
         return future;
     }
 
     template <typename Fn, typename... Args>
         requires std::invocable<Fn, Args...>
-    void enqueue_detached(Fn&& func, Args&&... args) {
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            tasks_.push([f = std::forward<Fn>(func), ... a = std::forward<Args>(args)]() mutable {
-                std::invoke(f, std::move(a)...);
-            });
-        }
-
-        condition_.notify_one();
+    void enqueue_void(Fn&& func, Args&&... args) {
+        push_task([f = std::forward<Fn>(func), ... a = std::forward<Args>(args)]() mutable {
+            std::invoke(f, std::move(a)...);
+        });
     }
 
 private:
+    template <typename Fn>
+        requires std::invocable<Fn>
+    void push_task(Fn&& func) {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            tasks_.push(std::forward<Fn>(func));
+            remaining_tasks_++;
+        }
+        condition_.notify_one();
+    }
+
     std::atomic<bool> running_{true};
+    std::size_t remaining_tasks_{};
     std::size_t num_threads_{};
     std::vector<std::thread> threads_;
     std::queue<std::move_only_function<void()>> tasks_;

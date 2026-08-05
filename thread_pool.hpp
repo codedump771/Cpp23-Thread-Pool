@@ -84,12 +84,14 @@ public:
         return future;
     }
 
-    template <typename Fn>
-        requires std::invocable<Fn>
-    void enqueue_void(Fn&& func) {
-        push_task([f = std::forward<Fn>(func)]() mutable {
-            f();
-        });
+    template <typename Fn, typename... Args>
+        requires std::invocable<Fn, Args...>
+    void enqueue_void(Fn&& func, Args&&... args) {
+        auto task = [f = std::forward<Fn>(func), ... a = std::forward<Args>(args)]() mutable {
+            std::invoke(f, std::move(a)...);
+        };
+
+        push_task([f = std::move(task)]() mutable { f(); });
     }
 
 private:
@@ -101,16 +103,16 @@ private:
     template <typename Fn>
         requires std::invocable<Fn>
     void push_task(Fn&& func) {
-            {
-                std::lock_guard<std::mutex> lock(mutex_);
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
 
-                if (!running_.load())
-                    throw std::logic_error("Task pushed after shutdown");
-    
-                tasks_.push(std::forward<Fn>(func));
-                ++remaining_tasks_;
-            }
-            condition_.notify_one();
+            if (!running_.load())
+                throw std::logic_error("Task pushed after shutdown");
+
+            tasks_.push(std::forward<Fn>(func));
+            ++remaining_tasks_;
+        }
+        condition_.notify_one();
     }
 
     std::atomic<bool> running_{true};
@@ -124,4 +126,3 @@ private:
 
     mutable std::mutex mutex_;
 };
-

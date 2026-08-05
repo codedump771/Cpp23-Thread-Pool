@@ -3,3 +3,4 @@ build/
 .clang-format
 .clangd
 example.cpp
+CMakeLists.txt

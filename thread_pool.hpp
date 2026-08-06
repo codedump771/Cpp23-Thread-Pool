@@ -25,28 +25,6 @@ public:
     ThreadPool(ThreadPool&&) = delete;
     ThreadPool& operator=(ThreadPool&&) = delete;
 
-    void launch_thread() {
-        while (true) {
-            std::move_only_function<void()> task;
-            {
-                std::unique_lock<std::mutex> lock(mutex_);
-                condition_.wait(lock, [this] { return !running_ || !tasks_.empty(); });
-
-                if (!running_ && tasks_.empty())
-                    // Ensure all tasks are finished before stopping
-                    return;
-                task = std::move(tasks_.front());
-                tasks_.pop();
-            }
-            task();
-
-            std::lock_guard lock(mutex_);
-            if (--remaining_tasks_ == 0) {
-                finished_.notify_all();
-            }
-        }
-    }
-
     void wait() {
         std::unique_lock lock(mutex_);
         finished_.wait(lock, [this] { return !remaining_tasks_; });
@@ -115,6 +93,28 @@ private:
         condition_.notify_one();
     }
 
+    void launch_thread() {
+        while (true) {
+            std::move_only_function<void()> task;
+            {
+                std::unique_lock<std::mutex> lock(mutex_);
+                condition_.wait(lock, [this] { return !running_ || !tasks_.empty(); });
+
+                if (!running_ && tasks_.empty())
+                    // Ensure all tasks are finished before stopping
+                    return;
+                task = std::move(tasks_.front());
+                tasks_.pop();
+            }
+            task();
+
+            std::lock_guard lock(mutex_);
+            if (--remaining_tasks_ == 0) {
+                finished_.notify_all();
+            }
+        }
+    }
+    
     std::atomic<bool> running_{true};
     std::size_t remaining_tasks_{};
     std::size_t num_threads_{};

@@ -1,9 +1,10 @@
 #pragma once
 
+#include "tasks_queue.hpp"
+
 #include <functional>
 #include <future>
 #include <mutex>
-#include <queue>
 #include <thread>
 #include <vector>
 
@@ -12,10 +13,13 @@
 
 class ThreadPool {
 public:
-    explicit ThreadPool(std::size_t num_threads) : num_threads_(num_threads) { init(); }
+
+    using FnType = std::move_only_function<void()>;
+    
+    explicit ThreadPool(std::size_t num_threads = std::max(std::thread::hardware_concurrency(), 1u)) 
+    : num_threads_(num_threads), queues_(num_threads) { init(); }
 
     // if hardware_concurrency fails, we ensure the amount of threads is atleast one.
-    ThreadPool() : num_threads_(std::max(std::thread::hardware_concurrency(), 1u)) { init(); }
 
     ~ThreadPool() { shutdown(); }
 
@@ -25,23 +29,13 @@ public:
     ThreadPool(ThreadPool&&) = delete;
     ThreadPool& operator=(ThreadPool&&) = delete;
 
-    void wait() {
-        std::unique_lock lock(mutex_);
-        finished_.wait(lock, [this] { return !remaining_tasks_; });
-    }
-
     void shutdown() {
-        if (!running_.load())
+        if (!running_.load(std::memory_order_acquire))
             return;
 
-        running_.store(false);
-
+        running_.store(false, std::memory_order_acquire);
+        
         condition_.notify_all();
-
-        for (auto& t : threads_) {
-            if (t.joinable())
-                t.join();
-        }
     }
 
     template <typename Fn, typename... Args>
@@ -49,8 +43,16 @@ public:
     [[nodiscard]] std::future<std::invoke_result_t<Fn, Args...>> enqueue(Fn&& func, Args&&... args) {
         using ReturnType = std::invoke_result_t<Fn, Args...>;
 
+        if (!running_.load(std::memory_order_acquire))
+            throw std::runtime_error("enqueue() was called after shut down.");
+        
         std::packaged_task<ReturnType()> task([f = std::forward<Fn>(func), ... a = std::forward<Args>(args)]() mutable {
-            return std::invoke(f, std::move(a)...);
+            try {
+                return std::invoke(f, std::move(a)...);
+            }
+            catch (...) {
+                throw std::current_exception();
+            }
         });
 
         std::future<ReturnType> future = task.get_future();
@@ -65,6 +67,10 @@ public:
     template <typename Fn, typename... Args>
         requires std::invocable<Fn, Args...>
     void enqueue_void(Fn&& func, Args&&... args) {
+
+        if (!running_.load(std::memory_order_acquire))
+            throw std::runtime_error("enqueue_void() was called after shutdown");
+        
         auto task = [f = std::forward<Fn>(func), ... a = std::forward<Args>(args)]() mutable {
             std::invoke(f, std::move(a)...);
         };
@@ -74,55 +80,78 @@ public:
 
 private:
     void init() {
-        for (std::size_t i = 0; i < num_threads_; ++i)
-            threads_.emplace_back(&ThreadPool::launch_thread, this);
+        for (std::size_t i = 0; i < num_threads_; ++i) {
+            threads_.emplace_back(&ThreadPool::launch_thread, this, i, std::ref(queues_[i]));
+        }
     }
 
     template <typename Fn>
         requires std::invocable<Fn>
     void push_task(Fn&& func) {
         {
+            
             std::lock_guard<std::mutex> lock(mutex_);
 
             if (!running_.load())
                 throw std::logic_error("Task pushed after shutdown");
 
-            tasks_.push(std::forward<Fn>(func));
-            ++remaining_tasks_;
+            std::size_t id = count_.fetch_add(1, std::memory_order_relaxed) % queues_.size();
+            
+            queues_[id].push(std::forward<Fn>(func));
+            remaining_tasks_.fetch_add(1, std::memory_order_release);
         }
         condition_.notify_one();
     }
 
-    void launch_thread() {
-        while (true) {
-            std::move_only_function<void()> task;
-            {
-                std::unique_lock<std::mutex> lock(mutex_);
-                condition_.wait(lock, [this] { return !running_ || !tasks_.empty(); });
+    std::optional<FnType> try_steal(std::size_t id) {
+        
+        for (std::size_t i = 0; i < queues_.size(); ++i) {
+            const std::size_t idx = (id + i + 1) % queues_.size();
+            if (auto stolen_task = queues_[idx].try_steal()) {
+                return stolen_task;
+            }
+        }
 
-                if (!running_ && tasks_.empty())
+        return std::nullopt;
+    }
+
+    void launch_thread(std::size_t id, TasksQueue& local_queue) {
+
+        while (true) {
+
+            FnType task;
+            {   
+                std::unique_lock<std::mutex> lock(mutex_);
+                condition_.wait(lock, [this] { 
+                    return !running_.load(std::memory_order_acquire) || 
+                    remaining_tasks_.load(std::memory_order_acquire) > 0;
+                });
+
+                if (!running_.load(std::memory_order_acquire) && remaining_tasks_.load(std::memory_order_acquire) == 0)
                     // Ensure all tasks are finished before stopping
                     return;
-                task = std::move(tasks_.front());
-                tasks_.pop();
+
+                if (auto opt_task = local_queue.try_pop())
+                    task = std::move(*opt_task);
+                else if (opt_task = try_steal(id)) //NOLINT
+                    task = std::move(*opt_task);
+                else 
+                    continue;
             }
             task();
-
-            std::lock_guard lock(mutex_);
-            if (--remaining_tasks_ == 0) {
-                finished_.notify_all();
-            }
+            remaining_tasks_.fetch_sub(1, std::memory_order_release);
         }
     }
     
     std::atomic<bool> running_{true};
-    std::size_t remaining_tasks_{};
+    std::atomic<std::size_t> remaining_tasks_{};
     std::size_t num_threads_{};
+    std::atomic<size_t> count_{};
     std::vector<std::thread> threads_;
-    std::queue<std::move_only_function<void()>> tasks_;
-
+    
+    std::vector<TasksQueue> queues_;
+    
     std::condition_variable condition_;
-    std::condition_variable finished_;
 
     mutable std::mutex mutex_;
 };

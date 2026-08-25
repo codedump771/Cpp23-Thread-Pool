@@ -2,12 +2,12 @@
 
 This is a very minimal thread pool implementation I made to teach myself threading with modern C++.
 
-## Usage ##
+## Usage
 
 The code should be compatible with any compiler/platform, as it uses standard C++ code. You simply need to 
 `#include "thread_pool.hpp"` in your cpp file and you should be fine.
 
-## Example ##
+## Example
 
 ```C++
 #include "thread_pool.hpp"
@@ -49,7 +49,7 @@ int main() {
 }
 ```
 
-## Output ##
+## Output
 ```
 Hi, Bob!
 Hi, Bob!

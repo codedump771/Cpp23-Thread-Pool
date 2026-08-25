@@ -3,10 +3,15 @@
 #include <deque>
 #include <functional>
 #include <mutex>
+#include <optional>
 
+namespace detail {
+    
 constexpr std::size_t cache_padding {std::hardware_destructive_interference_size};
 
-class alignas(cache_padding) TasksQueue {
+}
+
+class alignas(detail::cache_padding) TasksQueue { 
 private:
     using FnType = std::move_only_function<void()>;
     std::deque<FnType> queue_;
@@ -17,7 +22,7 @@ public:
     TasksQueue(const TasksQueue&) = delete;
     TasksQueue& operator=(const TasksQueue&) = delete;
 
-    void push(FnType& func) {
+    void push(FnType&& func) {
         std::lock_guard<std::mutex> lock(mutex_);
         queue_.push_front(std::move(func));
     }
@@ -35,23 +40,23 @@ public:
         return queue_.empty();
     }
 
-    bool try_pop(FnType& func) {
+    [[nodiscard]] std::optional<FnType> try_pop() {
         std::lock_guard<std::mutex> lock(mutex_);
         if (queue_.empty()) {
-            return false;
+            return std::nullopt;
         }
-        func = std::move(queue_.front());
+        std::optional<FnType> func = std::move(queue_.front());
         queue_.pop_front();
-        return true;
+        return func;
     }
 
-    bool try_steal(FnType& func) {
+    [[nodiscard]] std::optional<FnType> try_steal() {
         std::lock_guard<std::mutex> lock(mutex_);
         if (queue_.empty()) {
-            return false;
+            return std::nullopt;
         }
-        func = std::move(queue_.back());
+        std::optional<FnType> func = std::move(queue_.back());
         queue_.pop_back();
-        return true;
+        return func;
     }
 };

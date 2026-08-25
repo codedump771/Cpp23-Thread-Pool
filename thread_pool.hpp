@@ -30,12 +30,13 @@ public:
     ThreadPool& operator=(ThreadPool&&) = delete;
 
     void shutdown() {
-        if (!running_.load(std::memory_order_acquire))
-            return;
+        if (running_.exchange(false))
+            condition_.notify_all();
 
-        running_.store(false, std::memory_order_acquire);
-        
-        condition_.notify_all();
+        for (auto& t : threads_) {
+            if (t.joinable())
+                t.join();
+        }
     }
 
     template <typename Fn, typename... Args>
@@ -147,7 +148,7 @@ private:
     std::atomic<std::size_t> remaining_tasks_{};
     std::size_t num_threads_{};
     std::atomic<size_t> count_{};
-    std::vector<std::jthread> threads_;
+    std::vector<std::thread> threads_;
     
     std::vector<TasksQueue> queues_;
     

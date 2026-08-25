@@ -147,7 +147,7 @@ private:
     std::atomic<std::size_t> remaining_tasks_{};
     std::size_t num_threads_{};
     std::atomic<size_t> count_{};
-    std::vector<std::thread> threads_;
+    std::vector<std::jthread> threads_;
     
     std::vector<TasksQueue> queues_;
     

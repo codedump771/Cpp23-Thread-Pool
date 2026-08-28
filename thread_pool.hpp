@@ -30,11 +30,13 @@ public:
     ThreadPool& operator=(ThreadPool&&) = delete;
 
     void shutdown() {
-        if (running_.exchange(false))
-            condition_.notify_all();
+        if (!running_.exchange(false, std::memory_order_acquire))
+            return;
+        
+        condition_.notify_all();
 
         for (auto& t : threads_) {
-            if (t.joinable())
+            if (t.joinable()) 
                 t.join();
         }
     }
@@ -79,6 +81,13 @@ public:
         push_task([f = std::move(task)]() mutable { f(); });
     }
 
+    void wait() {
+        std::unique_lock<std::mutex> lock(mutex_);
+        wait_.wait(lock, [this] {
+            return remaining_tasks_.load(std::memory_order_acquire) == 0; 
+        });
+    }
+    
 private:
     void init() {
         for (std::size_t i = 0; i < num_threads_; ++i) {
@@ -93,7 +102,7 @@ private:
             
             std::lock_guard<std::mutex> lock(mutex_);
 
-            if (!running_.load())
+            if (!running_.load(std::memory_order_acquire))
                 throw std::logic_error("Task pushed after shutdown");
 
             std::size_t id = count_.fetch_add(1, std::memory_order_relaxed) % queues_.size();
@@ -140,7 +149,10 @@ private:
                     continue;
             }
             task();
-            remaining_tasks_.fetch_sub(1, std::memory_order_release);
+            
+            if (remaining_tasks_.fetch_sub(1) == 1) {
+                wait_.notify_one();
+            }
         }
     }
     
@@ -153,6 +165,7 @@ private:
     std::vector<TasksQueue> queues_;
     
     std::condition_variable condition_;
+    std::condition_variable wait_;
 
     mutable std::mutex mutex_;
 };
